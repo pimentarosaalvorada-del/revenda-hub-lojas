@@ -1,8 +1,8 @@
 import { useEffect, useState } from 'react';
 import { X } from 'lucide-react';
-import type { Product, StoreProduct } from '../types';
-import { formatBRL } from '../lib/format';
-import type { SavePatch } from '../hooks/useStoreData';
+import type { Product, StoreProduct } from './types';
+import { formatBRL } from './format';
+import type { SavePatch } from './useStoreData';
 
 interface Props {
   open: boolean;
