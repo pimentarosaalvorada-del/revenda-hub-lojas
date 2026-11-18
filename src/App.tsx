@@ -1,277 +1,301 @@
-import React, { useState, useEffect } from 'react';
-import { supabase } from './supabase';
+import React, { useState, useEffect, useMemo } from 'react';
+import { createClient } from '@supabase/supabase-js';
 import { 
-  ShoppingBag, Search, Plus, Minus, Trash2, Bike, Store as StoreIcon, 
-  MessageCircle, Settings, X, Check, ArrowRight, ShieldCheck, Sparkles 
+  ShoppingBag, Search, Plus, Minus, Trash2, X, Send, 
+  MapPin, Store as StoreIcon, ShieldCheck, Settings, CheckCircle2, ArrowRight
 } from 'lucide-react';
 
-interface StoreData {
+// ==========================================
+// CONFIGURAÇÃO SUPABASE
+// ==========================================
+const SUPABASE_URL = 'https://mgpabziigapxzzqcuvkz.supabase.co';
+const SUPABASE_ANON_KEY = 'sb_publishable_uQBgN5VRJhO2L26HukcF2w_sccksQ0B';
+export const supabase = createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
+
+// ==========================================
+// TIPAGEM
+// ==========================================
+interface Store {
   id: string;
-  name: string;
   slug: string;
+  name: string;
   whatsapp: string;
-  primary_color: string;
-  accent_color: string;
+  primary_color: string | null;
+  accent_color: string | null;
   delivery_fee: number;
+  is_active: boolean;
 }
 
-interface ProductItem {
+interface Product {
   id: string;
   name: string;
   price: number;
   stock_quantity: number;
-  custom_price?: number;
-  is_active?: boolean;
+  barcode: string;
 }
 
-interface CartItem {
-  product: ProductItem;
+interface StoreProductItem {
+  store_product_id: string;
+  product_id: string;
+  name: string;
+  custom_price: number;
+  stock_quantity: number;
+  barcode: string;
+  is_active: boolean;
+}
+
+interface CartItem extends StoreProductItem {
   quantity: number;
-  unitPrice: number;
 }
 
 export default function App() {
-  const [store, setStore] = useState<StoreData>({
-    id: 'loja-modelo',
-    name: 'Loja Modelo Hub',
-    slug: 'loja-modelo',
-    whatsapp: '51981838571',
-    primary_color: '#0f172a',
-    accent_color: '#10b981',
-    delivery_fee: 10.00,
-  });
-
-  const [products, setProducts] = useState<ProductItem[]>([]);
+  const [store, setStore] = useState<Store | null>(null);
+  const [products, setProducts] = useState<StoreProductItem[]>([]);
+  const [loading, setLoading] = useState<boolean>(true);
+  const [search, setSearch] = useState<string>('');
+  
+  // Carrinho & Checkout
   const [cart, setCart] = useState<CartItem[]>([]);
-  const [search, setSearch] = useState('');
-  const [filterMode, setFilterMode] = useState<'todos' | 'disponiveis'>('todos');
-  const [showCart, setShowCart] = useState(false);
-  const [showAdmin, setShowAdmin] = useState(false);
-  const [loading, setLoading] = useState(true);
+  const [isCartOpen, setIsCartOpen] = useState<boolean>(false);
+  const [deliveryType, setDeliveryType] = useState<'delivery' | 'pickup'>('delivery');
+  const [customerName, setCustomerName] = useState<string>('');
+  const [customerAddress, setCustomerAddress] = useState<string>('');
+  const [paymentMethod, setPaymentMethod] = useState<string>('PIX');
 
-  // Pedido
-  const [isDelivery, setIsDelivery] = useState(true);
-  const [customerName, setCustomerName] = useState('');
-  const [phone, setPhone] = useState('');
-  const [address, setAddress] = useState('');
-  const [notes, setNotes] = useState('');
+  // Painel de Gestão Rápida do Revendedor
+  const [isPanelOpen, setIsPanelOpen] = useState<boolean>(false);
+  const [allProducts, setAllProducts] = useState<Product[]>([]);
+  const [updatingId, setUpdatingId] = useState<string | null>(null);
 
-  // Painel Admin
-  const [editPriceList, setEditPriceList] = useState<{ [productId: string]: number }>({});
-  const [editActiveList, setEditActiveList] = useState<{ [productId: string]: boolean }>({});
-  const [savingAdmin, setSavingAdmin] = useState(false);
-
-  const searchParams = new URLSearchParams(window.location.search);
-  const storeSlug = searchParams.get('loja') || 'loja-modelo';
-
+  // 1. Identifica loja pelo slug da URL (?loja=slug ou pathname)
   useEffect(() => {
-    loadStoreData();
-  }, [storeSlug]);
+    loadStoreAndCatalog();
+  }, []);
 
-  const loadStoreData = async () => {
-    setLoading(true);
+  async function loadStoreAndCatalog() {
     try {
+      setLoading(true);
+      const urlParams = new URLSearchParams(window.location.search);
+      const slugParam = urlParams.get('loja') || window.location.pathname.replace('/', '') || 'loja-modelo';
+
+      // Busca dados da Loja
       const { data: storeData } = await supabase
         .from('stores')
         .select('*')
-        .eq('slug', storeSlug)
-        .maybeSingle();
+        .eq('slug', slugParam)
+        .eq('is_active', true)
+        .single();
 
-      if (storeData) setStore(storeData);
-
-      const { data: baseProducts } = await supabase
-        .from('products')
-        .select('*')
-        .order('name');
-
-      let customMap = new Map();
-      if (storeData?.id) {
-        const { data: customData } = await supabase
-          .from('store_products')
+      if (!storeData) {
+        // Fallback para primeira loja ativa caso não localize pelo slug
+        const { data: fallbackStore } = await supabase
+          .from('stores')
           .select('*')
-          .eq('store_id', storeData.id);
-
-        if (customData) {
-          customMap = new Map(customData.map(cp => [cp.product_id, cp]));
-        }
+          .eq('is_active', true)
+          .limit(1)
+          .single();
+        setStore(fallbackStore);
+        if (fallbackStore) await fetchProducts(fallbackStore.id);
+      } else {
+        setStore(storeData);
+        await fetchProducts(storeData.id);
       }
-
-      const initialPrices: { [key: string]: number } = {};
-      const initialActives: { [key: string]: boolean } = {};
-
-      const list: ProductItem[] = (baseProducts || []).map(p => {
-        const custom = customMap.get(p.id);
-        const finalPrice = custom?.custom_price !== undefined ? Number(custom.custom_price) : Number(p.price);
-        const active = custom?.is_active !== undefined ? custom.is_active : true;
-
-        initialPrices[p.id] = finalPrice;
-        initialActives[p.id] = active;
-
-        return { ...p, custom_price: finalPrice, is_active: active };
-      });
-
-      setProducts(list);
-      setEditPriceList(initialPrices);
-      setEditActiveList(initialActives);
-    } catch (e) {
-      console.error(e);
+    } catch (err) {
+      console.error('Erro ao inicializar:', err);
     } finally {
       setLoading(false);
     }
-  };
+  }
 
-  const getPrice = (p: ProductItem) => p.custom_price ?? Number(p.price);
+  async function fetchProducts(storeId: string) {
+    // Busca catálogo central e relação com loja
+    const [productsRes, storeProdRes] = await Promise.all([
+      supabase.from('products').select('*'),
+      supabase.from('store_products').select('*').eq('store_id', storeId)
+    ]);
 
-  const addToCart = (product: ProductItem) => {
-    if (product.stock_quantity <= 0) return;
+    const centralProducts: Product[] = productsRes.data || [];
+    const storeProductsMap = new Map((storeProdRes.data || []).map((sp: any) => [sp.product_id, sp]));
 
-    setCart(prev => {
-      const existing = prev.find(i => i.product.id === product.id);
+    setAllProducts(centralProducts);
+
+    // Constrói catálogo da vitrine
+    const catalog: StoreProductItem[] = centralProducts
+      .filter((p) => {
+        const sp = storeProductsMap.get(p.id);
+        return sp ? sp.is_active : false;
+      })
+      .map((p) => {
+        const sp = storeProductsMap.get(p.id);
+        return {
+          store_product_id: sp?.id,
+          product_id: p.id,
+          name: p.name,
+          custom_price: Number(sp?.custom_price ?? p.price),
+          stock_quantity: p.stock_quantity,
+          barcode: p.barcode,
+          is_active: sp?.is_active ?? false,
+        };
+      });
+
+    setProducts(catalog);
+  }
+
+  // Ações do Carrinho
+  const addToCart = (product: StoreProductItem) => {
+    setCart((prev) => {
+      const existing = prev.find((item) => item.product_id === product.product_id);
       if (existing) {
-        if (existing.quantity >= product.stock_quantity) {
-          alert('Quantidade máxima em estoque atingida!');
-          return prev;
-        }
-        return prev.map(i =>
-          i.product.id === product.id ? { ...i, quantity: i.quantity + 1 } : i
+        if (existing.quantity >= product.stock_quantity) return prev;
+        return prev.map((item) =>
+          item.product_id === product.product_id ? { ...item, quantity: item.quantity + 1 } : item
         );
       }
-      return [...prev, { product, quantity: 1, unitPrice: getPrice(product) }];
+      return [...prev, { ...product, quantity: 1 }];
     });
+    setIsCartOpen(true);
   };
 
-  const updateCartQtd = (productId: string, delta: number) => {
-    setCart(prev =>
+  const updateQuantity = (productId: string, delta: number) => {
+    setCart((prev) =>
       prev
-        .map(i => {
-          if (i.product.id === productId) {
-            const next = i.quantity + delta;
-            if (next > i.product.stock_quantity) return i;
-            return next > 0 ? { ...i, quantity: next } : null;
+        .map((item) => {
+          if (item.product_id === productId) {
+            const newQty = item.quantity + delta;
+            return newQty > 0 && newQty <= item.stock_quantity ? { ...item, quantity: newQty } : null;
           }
-          return i;
+          return item;
         })
         .filter(Boolean) as CartItem[]
     );
   };
 
-  const itemsTotal = cart.reduce((acc, i) => acc + i.unitPrice * i.quantity, 0);
-  const deliveryTax = isDelivery ? Number(store.delivery_fee || 0) : 0;
-  const finalTotal = itemsTotal + deliveryTax;
+  const removeFromCart = (productId: string) => {
+    setCart((prev) => prev.filter((item) => item.product_id !== productId));
+  };
 
-  const handleSendWhatsApp = () => {
-    if (cart.length === 0) return;
+  const subtotal = useMemo(() => cart.reduce((acc, item) => acc + item.custom_price * item.quantity, 0), [cart]);
+  const deliveryCost = deliveryType === 'delivery' ? Number(store?.delivery_fee || 0) : 0;
+  const total = subtotal + deliveryCost;
+  const cartTotalItems = useMemo(() => cart.reduce((acc, item) => acc + item.quantity, 0), [cart]);
 
-    if (isDelivery && (!customerName.trim() || !address.trim())) {
-      alert('Por favor, informe seu Nome e Endereço para entrega!');
+  // Envio do Pedido via WhatsApp
+  const handleCheckoutWhatsApp = () => {
+    if (!customerName.trim()) {
+      alert('Por favor, informe seu nome para o pedido.');
+      return;
+    }
+    if (deliveryType === 'delivery' && !customerAddress.trim()) {
+      alert('Por favor, informe o endereço completo para entrega.');
       return;
     }
 
-    let msg = `🛍️ *NOVO PEDIDO - ${store.name.toUpperCase()}*\n`;
-    msg += `━━━━━━━━━━━━━━━━━━━━━━\n\n`;
-    msg += `*ITENS DO PEDIDO:*\n`;
-    cart.forEach(i => {
-      msg += `▫️ ${i.quantity}x ${i.product.name}\n   R$ ${i.unitPrice.toFixed(2)} un → *R$ ${(i.unitPrice * i.quantity).toFixed(2)}*\n`;
-    });
+    const itemsSummary = cart
+      .map((item) => `▪ ${item.quantity}x ${item.name} - R$ ${(item.custom_price * item.quantity).toFixed(2)}`)
+      .join('\n');
 
-    msg += `\n━━━━━━━━━━━━━━━━━━━━━━\n`;
-    msg += `*Subtotal:* R$ ${itemsTotal.toFixed(2)}\n`;
-    if (isDelivery) {
-      msg += `*Tele-entrega:* R$ ${deliveryTax.toFixed(2)}\n`;
-      msg += `*Forma:* Tele-entrega\n`;
-    } else {
-      msg += `*Forma:* Retirada no Balcão\n`;
-    }
-    msg += `*TOTAL A PAGAR:* *R$ ${finalTotal.toFixed(2)}*\n`;
-    msg += `━━━━━━━━━━━━━━━━━━━━━━\n\n`;
+    const message = `*NOVO PEDIDO - ${store?.name}*\n` +
+      `-----------------------------------------\n` +
+      `👤 *Cliente:* ${customerName}\n` +
+      `📦 *Tipo:* ${deliveryType === 'delivery' ? 'Tele-entrega' : 'Retirada no Local'}\n` +
+      (deliveryType === 'delivery' ? `📍 *Endereço:* ${customerAddress}\n` : '') +
+      `💳 *Pagamento:* ${paymentMethod}\n\n` +
+      `*Itens do Pedido:*\n${itemsSummary}\n\n` +
+      `-----------------------------------------\n` +
+      `Subtotal: R$ ${subtotal.toFixed(2)}\n` +
+      (deliveryType === 'delivery' ? `Taxa de Entrega: R$ ${deliveryCost.toFixed(2)}\n` : '') +
+      `*TOTAL: R$ ${total.toFixed(2)}*\n` +
+      `-----------------------------------------\n` +
+      `_Aguardando confirmação do pedido!_`;
 
-    msg += `*DADOS DO CLIENTE:*\n`;
-    msg += `👤 *Nome:* ${customerName || 'Não informado'}\n`;
-    if (phone) msg += `📱 *WhatsApp:* ${phone}\n`;
-    if (isDelivery) msg += `📍 *Endereço:* ${address}\n`;
-    if (notes) msg += `📝 *Obs:* ${notes}\n`;
-
-    const cleanWhats = store.whatsapp.replace(/\D/g, '');
-    window.open(`https://wa.me/55${cleanWhats}?text=${encodeURIComponent(msg)}`, '_blank');
+    const cleanNumber = (store?.whatsapp || '').replace(/\D/g, '');
+    const whatsappUrl = `https://wa.me/55${cleanNumber}?text=${encodeURIComponent(message)}`;
+    window.open(whatsappUrl, '_blank');
   };
 
-  const handleSaveAdmin = async () => {
-    setSavingAdmin(true);
+  // Gestão de produtos do revendedor
+  async function toggleStoreProduct(product: Product, currentSp?: any, newPrice?: number) {
+    if (!store) return;
+    setUpdatingId(product.id);
     try {
-      for (const p of products) {
-        const price = editPriceList[p.id] ?? Number(p.price);
-        const active = editActiveList[p.id] ?? true;
-
-        await supabase.from('store_products').upsert({
+      if (currentSp) {
+        await supabase
+          .from('store_products')
+          .update({
+            is_active: !currentSp.is_active,
+            ...(newPrice !== undefined ? { custom_price: newPrice } : {})
+          })
+          .eq('id', currentSp.id);
+      } else {
+        await supabase.from('store_products').insert({
           store_id: store.id,
-          product_id: p.id,
-          custom_price: price,
-          is_active: active,
-        }, { onConflict: 'store_id,product_id' });
+          product_id: product.id,
+          custom_price: product.price,
+          is_active: true
+        });
       }
-
-      alert('Alterações salvas com sucesso!');
-      setShowAdmin(false);
-      loadStoreData();
-    } catch (e: any) {
-      alert('Erro ao salvar: ' + e.message);
+      await fetchProducts(store.id);
+    } catch (err) {
+      console.error(err);
     } finally {
-      setSavingAdmin(false);
+      setUpdatingId(null);
     }
-  };
+  }
 
-  const activeProducts = products.filter(p => p.is_active !== false);
-  const filtered = activeProducts.filter(p => {
-    const matchesSearch = p.name.toLowerCase().includes(search.toLowerCase());
-    const matchesFilter = filterMode === 'todos' ? true : p.stock_quantity > 0;
-    return matchesSearch && matchesFilter;
-  });
+  const filteredProducts = products.filter((p) =>
+    p.name.toLowerCase().includes(search.toLowerCase())
+  );
+
+  const primaryColor = store?.primary_color || '#0f172a';
+
+  if (loading) {
+    return (
+      <div className="min-h-screen bg-slate-50 flex items-center justify-center">
+        <div className="animate-spin rounded-full h-8 w-8 border-2 border-slate-900 border-t-transparent" />
+      </div>
+    );
+  }
 
   return (
-    <div className="min-h-screen bg-[#F8FAFC] text-slate-900 font-sans antialiased pb-32">
-      {/* Topo da Loja */}
-      <header className="sticky top-0 z-30 bg-white/90 backdrop-blur-md border-b border-slate-200/80 shadow-xs">
-        <div className="max-w-2xl mx-auto px-4 py-3.5 flex items-center justify-between">
+    <div className="min-h-screen bg-[#F8FAFC] text-slate-900 font-sans pb-24">
+      {/* HEADER FIXO MINIMALISTA */}
+      <header className="sticky top-0 z-40 bg-white/80 backdrop-blur-md border-b border-slate-100 transition-all">
+        <div className="max-w-5xl mx-auto px-4 h-16 flex items-center justify-between">
           <div className="flex items-center gap-3">
             <div 
-              style={{ backgroundColor: store.primary_color || '#0f172a' }} 
-              className="w-10 h-10 rounded-2xl flex items-center justify-center text-white font-black text-base shadow-sm"
+              className="w-10 h-10 rounded-2xl flex items-center justify-center text-white font-bold shadow-sm"
+              style={{ backgroundColor: primaryColor }}
             >
-              {store.name.substring(0, 2).toUpperCase()}
+              <StoreIcon className="w-5 h-5" />
             </div>
             <div>
-              <div className="flex items-center gap-1.5">
-                <h1 className="text-base font-extrabold text-slate-900 tracking-tight leading-none">
-                  {store.name}
-                </h1>
-                <span className="flex h-2 w-2 relative">
-                  <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75"></span>
-                  <span className="relative inline-flex rounded-full h-2 w-2 bg-emerald-500"></span>
-                </span>
-              </div>
-              <p className="text-[11px] font-semibold text-slate-500 mt-0.5 flex items-center gap-1">
-                <ShieldCheck className="w-3 h-3 text-emerald-600 inline" /> Pedido Seguro via WhatsApp
-              </p>
+              <h1 className="font-semibold tracking-tight text-slate-900 leading-tight">{store?.name || 'Revenda Hub'}</h1>
+              <span className="flex items-center gap-1.5 text-xs text-emerald-600 font-medium">
+                <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse" />
+                Catálogo Online
+              </span>
             </div>
           </div>
 
           <div className="flex items-center gap-2">
             <button
-              onClick={() => setShowAdmin(true)}
-              className="p-2 text-slate-400 hover:text-slate-800 hover:bg-slate-100 rounded-xl transition"
-              title="Configurar Loja"
+              onClick={() => setIsPanelOpen(true)}
+              className="p-2.5 rounded-xl border border-slate-200 text-slate-600 hover:bg-slate-100 transition"
+              title="Área do Revendedor"
             >
               <Settings className="w-5 h-5" />
             </button>
 
             <button
-              onClick={() => setShowCart(true)}
-              className="relative p-2.5 bg-slate-900 hover:bg-slate-800 text-white rounded-xl shadow-xs transition"
+              onClick={() => setIsCartOpen(true)}
+              className="relative flex items-center gap-2 px-4 py-2.5 rounded-2xl text-white font-medium text-sm transition shadow-sm hover:opacity-95"
+              style={{ backgroundColor: primaryColor }}
             >
-              <ShoppingBag className="w-5 h-5" />
-              {cart.length > 0 && (
-                <span className="absolute -top-1.5 -right-1.5 bg-emerald-500 text-white font-black text-[10px] w-5 h-5 rounded-full flex items-center justify-center border-2 border-white shadow">
-                  {cart.reduce((acc, i) => acc + i.quantity, 0)}
+              <ShoppingBag className="w-4 h-4" />
+              <span className="hidden sm:inline">Carrinho</span>
+              {cartTotalItems > 0 && (
+                <span className="bg-white text-slate-950 px-2 py-0.5 rounded-full text-xs font-bold">
+                  {cartTotalItems}
                 </span>
               )}
             </button>
@@ -279,360 +303,298 @@ export default function App() {
         </div>
       </header>
 
-      {/* Hero / Banner Rápido */}
-      <div className="max-w-2xl mx-auto px-4 mt-4">
-        <div className="bg-gradient-to-br from-slate-900 via-slate-800 to-slate-900 text-white p-5 rounded-3xl shadow-sm relative overflow-hidden">
-          <div className="relative z-10 space-y-1">
-            <span className="inline-flex items-center gap-1 text-[10px] font-bold uppercase tracking-wider bg-white/10 px-2.5 py-0.5 rounded-full text-slate-200">
-              <Sparkles className="w-3 h-3 text-amber-400" /> Catálogo Atualizado
+      {/* HERO & BUSCA */}
+      <main className="max-w-5xl mx-auto px-4 pt-6 space-y-6">
+        <div className="bg-white rounded-3xl p-6 sm:p-8 border border-slate-100 shadow-sm relative overflow-hidden">
+          <div className="max-w-xl space-y-2 relative z-10">
+            <span className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-semibold bg-emerald-50 text-emerald-700">
+              <ShieldCheck className="w-3.5 h-3.5" /> Produtos Originais Pronta Entrega
             </span>
-            <h2 className="text-lg font-black tracking-tight pt-1">
-              Produtos Exclusivos & Pronta Entrega
+            <h2 className="text-2xl sm:text-3xl font-bold tracking-tight text-slate-900">
+              Faça seu pedido direto pelo WhatsApp
             </h2>
-            <p className="text-xs text-slate-300 font-medium">
-              Escolha suas peças e finalize seu pedido diretamente no nosso WhatsApp.
+            <p className="text-sm text-slate-500">
+              Escolha os produtos desejados, selecione retirada ou tele-entrega e finalize em segundos.
             </p>
           </div>
-          <div className="absolute right-0 bottom-0 translate-x-4 translate-y-4 opacity-10">
-            <ShoppingBag className="w-32 h-32" />
+
+          {/* Input de Busca */}
+          <div className="mt-6 relative max-w-lg">
+            <Search className="w-5 h-5 absolute left-4 top-1/2 -translate-y-1/2 text-slate-400" />
+            <input
+              type="text"
+              placeholder="Buscar produtos..."
+              value={search}
+              onChange={(e) => setSearch(e.target.value)}
+              className="w-full pl-11 pr-4 py-3 bg-slate-50 border border-slate-200 rounded-2xl text-sm focus:outline-none focus:ring-2 focus:ring-slate-900 focus:bg-white transition"
+            />
           </div>
         </div>
-      </div>
 
-      {/* Busca e Filtros Rápidos */}
-      <div className="max-w-2xl mx-auto px-4 mt-4 space-y-3">
-        <div className="relative">
-          <Search className="absolute left-3.5 top-3.5 w-4 h-4 text-slate-400" />
-          <input
-            type="text"
-            placeholder="O que você está procurando hoje?"
-            value={search}
-            onChange={e => setSearch(e.target.value)}
-            className="w-full pl-10 pr-4 py-2.5 bg-white border border-slate-200/90 rounded-2xl text-xs font-medium placeholder-slate-400 outline-none focus:border-slate-900 focus:ring-2 focus:ring-slate-900/10 shadow-xs transition"
-          />
-        </div>
-
-        <div className="flex gap-2 text-xs font-bold">
-          <button
-            onClick={() => setFilterMode('todos')}
-            className={`px-3.5 py-1.5 rounded-xl border transition ${
-              filterMode === 'todos' 
-                ? 'bg-slate-900 text-white border-slate-900 shadow-xs' 
-                : 'bg-white text-slate-600 border-slate-200 hover:border-slate-300'
-            }`}
-          >
-            Todos ({products.length})
-          </button>
-          <button
-            onClick={() => setFilterMode('disponiveis')}
-            className={`px-3.5 py-1.5 rounded-xl border transition ${
-              filterMode === 'disponiveis' 
-                ? 'bg-slate-900 text-white border-slate-900 shadow-xs' 
-                : 'bg-white text-slate-600 border-slate-200 hover:border-slate-300'
-            }`}
-          >
-            Apenas em Estoque
-          </button>
-        </div>
-      </div>
-
-      {/* Catálogo de Produtos */}
-      <main className="max-w-2xl mx-auto px-4 mt-5">
-        {loading ? (
-          <div className="text-center py-16 text-slate-400 text-xs font-semibold animate-pulse">
-            Carregando vitrine de produtos...
+        {/* GRID DE PRODUTOS */}
+        <div>
+          <div className="flex items-center justify-between mb-4">
+            <h3 className="font-semibold text-slate-800">Produtos Disponíveis</h3>
+            <span className="text-xs text-slate-400">{filteredProducts.length} itens</span>
           </div>
-        ) : filtered.length === 0 ? (
-          <div className="text-center py-16 bg-white border border-slate-200 rounded-3xl p-8 space-y-2">
-            <ShoppingBag className="w-8 h-8 text-slate-300 mx-auto" />
-            <p className="text-sm font-bold text-slate-700">Nenhum produto encontrado</p>
-            <p className="text-xs text-slate-400">Tente buscar por outro termo ou limpe os filtros.</p>
-          </div>
-        ) : (
-          <div className="grid grid-cols-2 gap-3.5">
-            {filtered.map(p => {
-              const price = getPrice(p);
-              const inStock = p.stock_quantity > 0;
 
-              return (
-                <div
-                  key={p.id}
-                  className="bg-white border border-slate-200/80 rounded-2xl p-3.5 flex flex-col justify-between shadow-xs hover:border-slate-400 transition group"
-                >
-                  <div className="space-y-2">
-                    <div className="flex items-center justify-between">
-                      <span
-                        className={`text-[10px] font-extrabold uppercase tracking-wider px-2 py-0.5 rounded-md ${
-                          inStock ? 'bg-emerald-50 text-emerald-700' : 'bg-slate-100 text-slate-400'
-                        }`}
-                      >
-                        {inStock ? 'Pronta Entrega' : 'Esgotado'}
-                      </span>
-                    </div>
-
-                    <h3 className="font-extrabold text-xs text-slate-900 line-clamp-2 leading-snug group-hover:text-slate-700 transition">
-                      {p.name}
-                    </h3>
-                  </div>
-
-                  <div className="mt-4 pt-3 border-t border-slate-100 flex items-end justify-between">
+          {filteredProducts.length === 0 ? (
+            <div className="bg-white rounded-3xl p-12 text-center border border-slate-100">
+              <p className="text-sm text-slate-400">Nenhum produto encontrado na vitrine no momento.</p>
+            </div>
+          ) : (
+            <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 gap-3 sm:gap-4">
+              {filteredProducts.map((product) => {
+                const inCart = cart.find((i) => i.product_id === product.product_id);
+                return (
+                  <div
+                    key={product.product_id}
+                    className="bg-white rounded-2xl sm:rounded-3xl p-3 sm:p-4 border border-slate-100 shadow-sm flex flex-col justify-between hover:shadow-md transition group"
+                  >
                     <div>
-                      <span className="text-[10px] font-bold text-slate-400 block uppercase tracking-wider">
-                        Valor
-                      </span>
-                      <span className="text-base font-black text-slate-900 tracking-tight">
-                        R$ {price.toFixed(2)}
-                      </span>
+                      {/* Placeholder de Foto Moderno */}
+                      <div className="w-full aspect-square rounded-xl sm:rounded-2xl bg-gradient-to-tr from-slate-100 to-slate-50 flex items-center justify-center relative overflow-hidden mb-3">
+                        <span className="text-2xl font-bold text-slate-300 select-none">
+                          {product.name.substring(0, 2).toUpperCase()}
+                        </span>
+                        <div className="absolute top-2 left-2">
+                          <span className="text-[10px] font-semibold bg-white/90 backdrop-blur-sm text-slate-700 px-2 py-0.5 rounded-full shadow-2xs">
+                            Estoque: {product.stock_quantity}
+                          </span>
+                        </div>
+                      </div>
+
+                      <h4 className="font-medium text-slate-800 text-xs sm:text-sm line-clamp-2 leading-snug">
+                        {product.name}
+                      </h4>
                     </div>
 
-                    <button
-                      disabled={!inStock}
-                      onClick={() => addToCart(p)}
-                      className={`p-2.5 rounded-xl font-bold flex items-center justify-center transition shadow-xs ${
-                        inStock
-                          ? 'bg-slate-900 hover:bg-slate-800 text-white'
-                          : 'bg-slate-100 text-slate-300 cursor-not-allowed'
-                      }`}
-                    >
-                      <Plus className="w-4 h-4" />
-                    </button>
+                    <div className="mt-3 pt-2 border-t border-slate-50 flex items-center justify-between">
+                      <div>
+                        <span className="text-[10px] text-slate-400 uppercase tracking-wider block">Preço</span>
+                        <span className="text-sm sm:text-base font-bold text-slate-900">
+                          R$ {product.custom_price.toFixed(2)}
+                        </span>
+                      </div>
+
+                      <button
+                        onClick={() => addToCart(product)}
+                        disabled={product.stock_quantity <= 0}
+                        className={`w-9 h-9 rounded-xl flex items-center justify-center transition ${
+                          product.stock_quantity <= 0
+                            ? 'bg-slate-100 text-slate-300 cursor-not-allowed'
+                            : 'bg-slate-900 text-white hover:bg-slate-800 active:scale-95'
+                        }`}
+                        title="Adicionar ao carrinho"
+                      >
+                        {inCart ? (
+                          <span className="text-xs font-bold">{inCart.quantity}</span>
+                        ) : (
+                          <Plus className="w-4 h-4" />
+                        )}
+                      </button>
+                    </div>
                   </div>
-                </div>
-              );
-            })}
-          </div>
-        )}
+                );
+              })}
+            </div>
+          )}
+        </div>
       </main>
 
-      {/* Botão de Carrinho Flutuante */}
-      {cart.length > 0 && !showCart && (
-        <div className="fixed bottom-4 left-4 right-4 z-20 max-w-2xl mx-auto animate-in slide-in-from-bottom duration-300">
-          <button
-            onClick={() => setShowCart(true)}
-            className="w-full py-4 px-5 bg-slate-900 hover:bg-slate-800 text-white font-extrabold rounded-2xl flex items-center justify-between shadow-2xl transition border border-slate-800"
-          >
-            <div className="flex items-center gap-2.5 text-xs">
-              <span className="bg-emerald-500 text-slate-950 font-black px-2 py-0.5 rounded-lg text-[11px]">
-                {cart.reduce((acc, i) => acc + i.quantity, 0)}
-              </span>
-              <span>Itens no carrinho</span>
-            </div>
-            <div className="flex items-center gap-1.5 text-sm font-black">
-              <span>R$ {itemsTotal.toFixed(2)}</span>
-              <ArrowRight className="w-4 h-4" />
-            </div>
-          </button>
-        </div>
-      )}
-
-      {/* Drawer do Carrinho */}
-      {showCart && (
-        <div className="fixed inset-0 bg-slate-950/60 z-50 flex items-end sm:items-center justify-center p-0 sm:p-4 backdrop-blur-xs">
-          <div className="bg-white w-full max-w-lg rounded-t-3xl sm:rounded-3xl p-5 max-h-[92vh] overflow-y-auto space-y-4 animate-in slide-in-from-bottom duration-200">
-            <div className="flex items-center justify-between border-b border-slate-100 pb-3">
-              <div>
-                <h2 className="font-black text-base text-slate-900">Seu Pedido</h2>
-                <p className="text-xs text-slate-400 font-medium">Revise seus itens antes de enviar</p>
+      {/* DRAWER / BOTTOM SHEET DO CARRINHO */}
+      {isCartOpen && (
+        <div className="fixed inset-0 z-50 flex justify-end">
+          <div className="fixed inset-0 bg-slate-950/40 backdrop-blur-xs" onClick={() => setIsCartOpen(false)} />
+          
+          <div className="relative w-full max-w-md bg-white h-full shadow-2xl flex flex-col z-10 animate-in slide-in-from-right duration-200">
+            {/* Cabeçalho do Carrinho */}
+            <div className="px-6 py-4 border-b border-slate-100 flex items-center justify-between">
+              <div className="flex items-center gap-2">
+                <ShoppingBag className="w-5 h-5 text-slate-700" />
+                <h3 className="font-semibold text-slate-900">Seu Carrinho</h3>
+                <span className="text-xs bg-slate-100 px-2 py-0.5 rounded-full font-medium text-slate-600">
+                  {cartTotalItems}
+                </span>
               </div>
-              <button 
-                onClick={() => setShowCart(false)} 
-                className="p-1 text-slate-400 hover:text-slate-900 rounded-full"
-              >
+              <button onClick={() => setIsCartOpen(false)} className="p-1.5 rounded-xl hover:bg-slate-100 text-slate-400">
                 <X className="w-5 h-5" />
               </button>
             </div>
 
-            {/* Lista dos Itens */}
-            <div className="divide-y divide-slate-100 max-h-44 overflow-y-auto space-y-2 pr-1">
-              {cart.map(item => (
-                <div key={item.product.id} className="pt-2 flex items-center justify-between text-xs">
-                  <div className="flex-1 pr-2">
-                    <p className="font-extrabold text-slate-900 leading-tight">{item.product.name}</p>
-                    <p className="text-[11px] text-slate-400 mt-0.5">R$ {item.unitPrice.toFixed(2)} un</p>
-                  </div>
-                  <div className="flex items-center gap-2">
-                    <div className="flex items-center border border-slate-200 rounded-lg bg-slate-50">
-                      <button onClick={() => updateCartQtd(item.product.id, -1)} className="p-1 hover:bg-slate-200">
-                        <Minus className="w-3 h-3" />
-                      </button>
-                      <span className="px-2 font-black text-xs">{item.quantity}</span>
-                      <button onClick={() => updateCartQtd(item.product.id, 1)} className="p-1 hover:bg-slate-200">
-                        <Plus className="w-3 h-3" />
+            {/* Itens do Carrinho */}
+            <div className="flex-1 overflow-y-auto px-6 py-4 space-y-3">
+              {cart.length === 0 ? (
+                <div className="h-full flex flex-col items-center justify-center text-center space-y-2">
+                  <ShoppingBag className="w-12 h-12 text-slate-200" />
+                  <p className="text-sm text-slate-500 font-medium">Carrinho vazio</p>
+                  <p className="text-xs text-slate-400">Adicione itens da vitrine para prosseguir.</p>
+                </div>
+              ) : (
+                cart.map((item) => (
+                  <div key={item.product_id} className="flex items-center justify-between p-3 rounded-2xl bg-slate-50 border border-slate-100">
+                    <div className="flex-1 pr-3">
+                      <p className="text-xs sm:text-sm font-medium text-slate-800 line-clamp-1">{item.name}</p>
+                      <p className="text-xs text-slate-500 font-semibold mt-0.5">R$ {item.custom_price.toFixed(2)}</p>
+                    </div>
+
+                    <div className="flex items-center gap-2">
+                      <div className="flex items-center bg-white rounded-xl border border-slate-200 p-0.5">
+                        <button
+                          onClick={() => updateQuantity(item.product_id, -1)}
+                          className="p-1 text-slate-500 hover:text-slate-800"
+                        >
+                          <Minus className="w-3.5 h-3.5" />
+                        </button>
+                        <span className="w-6 text-center text-xs font-semibold text-slate-800">{item.quantity}</span>
+                        <button
+                          onClick={() => updateQuantity(item.product_id, 1)}
+                          className="p-1 text-slate-500 hover:text-slate-800"
+                        >
+                          <Plus className="w-3.5 h-3.5" />
+                        </button>
+                      </div>
+
+                      <button
+                        onClick={() => removeFromCart(item.product_id)}
+                        className="p-1.5 text-slate-400 hover:text-rose-500"
+                      >
+                        <Trash2 className="w-4 h-4" />
                       </button>
                     </div>
-                    <span className="font-black min-w-[55px] text-right text-slate-900">
-                      R$ {(item.unitPrice * item.quantity).toFixed(2)}
-                    </span>
-                    <button onClick={() => updateCartQtd(item.product.id, -item.quantity)} className="text-slate-300 hover:text-red-500 p-1">
-                      <Trash2 className="w-3.5 h-3.5" />
-                    </button>
                   </div>
-                </div>
-              ))}
+                ))
+              )}
             </div>
 
-            {/* Tipo de Entrega */}
-            <div className="border-t border-slate-100 pt-3 space-y-2.5">
-              <label className="text-xs font-black text-slate-800 uppercase tracking-wider block">
-                Forma de Recebimento
-              </label>
-              <div className="grid grid-cols-2 gap-2 text-xs">
-                <button
-                  type="button"
-                  onClick={() => setIsDelivery(false)}
-                  className={`py-3 rounded-xl font-extrabold border flex items-center justify-center gap-2 transition ${
-                    !isDelivery 
-                      ? 'bg-slate-900 text-white border-slate-900 shadow-xs' 
-                      : 'bg-slate-50 text-slate-600 border-slate-200 hover:bg-slate-100'
-                  }`}
-                >
-                  <StoreIcon className="w-4 h-4" />
-                  Balcão
-                </button>
-                <button
-                  type="button"
-                  onClick={() => setIsDelivery(true)}
-                  className={`py-3 rounded-xl font-extrabold border flex items-center justify-center gap-2 transition ${
-                    isDelivery 
-                      ? 'bg-slate-900 text-white border-slate-900 shadow-xs' 
-                      : 'bg-slate-50 text-slate-600 border-slate-200 hover:bg-slate-100'
-                  }`}
-                >
-                  <Bike className="w-4 h-4" />
-                  Tele (+R$ {Number(store.delivery_fee).toFixed(2)})
-                </button>
-              </div>
+            {/* Checkout & WhatsApp */}
+            {cart.length > 0 && (
+              <div className="p-6 border-t border-slate-100 bg-slate-50/50 space-y-4">
+                {/* Tipo de Entrega */}
+                <div className="grid grid-cols-2 gap-2 bg-slate-100 p-1 rounded-2xl">
+                  <button
+                    onClick={() => setDeliveryType('delivery')}
+                    className={`py-2 rounded-xl text-xs font-medium transition ${
+                      deliveryType === 'delivery' ? 'bg-white text-slate-900 shadow-2xs font-semibold' : 'text-slate-500'
+                    }`}
+                  >
+                    Tele-entrega (+R$ {Number(store?.delivery_fee || 0).toFixed(2)})
+                  </button>
+                  <button
+                    onClick={() => setDeliveryType('pickup')}
+                    className={`py-2 rounded-xl text-xs font-medium transition ${
+                      deliveryType === 'pickup' ? 'bg-white text-slate-900 shadow-2xs font-semibold' : 'text-slate-500'
+                    }`}
+                  >
+                    Retirada (Grátis)
+                  </button>
+                </div>
 
-              {/* Dados do Cliente */}
-              <div className="space-y-2 pt-1 text-xs">
-                <input
-                  type="text"
-                  placeholder="Seu Nome completo *"
-                  value={customerName}
-                  onChange={e => setCustomerName(e.target.value)}
-                  className="w-full p-2.5 bg-slate-50 border border-slate-200 rounded-xl outline-none focus:border-slate-900 focus:bg-white font-medium"
-                />
-                <input
-                  type="text"
-                  placeholder="Seu WhatsApp com DDD (opcional)"
-                  value={phone}
-                  onChange={e => setPhone(e.target.value)}
-                  className="w-full p-2.5 bg-slate-50 border border-slate-200 rounded-xl outline-none focus:border-slate-900 focus:bg-white font-medium"
-                />
-
-                {isDelivery && (
+                {/* Dados do Cliente */}
+                <div className="space-y-2">
                   <input
                     type="text"
-                    placeholder="Endereço Completo (Rua, número, bairro) *"
-                    value={address}
-                    onChange={e => setAddress(e.target.value)}
-                    className="w-full p-2.5 bg-slate-50 border border-slate-200 rounded-xl outline-none focus:border-slate-900 focus:bg-white font-medium"
+                    placeholder="Seu Nome completo"
+                    value={customerName}
+                    onChange={(e) => setCustomerName(e.target.value)}
+                    className="w-full px-3.5 py-2.5 bg-white border border-slate-200 rounded-xl text-xs focus:ring-2 focus:ring-slate-900 focus:outline-none"
                   />
-                )}
 
-                <input
-                  type="text"
-                  placeholder="Alguma observação? (ex: forma de pagamento, troco)"
-                  value={notes}
-                  onChange={e => setNotes(e.target.value)}
-                  className="w-full p-2.5 bg-slate-50 border border-slate-200 rounded-xl outline-none focus:border-slate-900 focus:bg-white font-medium"
-                />
-              </div>
-            </div>
+                  {deliveryType === 'delivery' && (
+                    <input
+                      type="text"
+                      placeholder="Endereço de entrega (Rua, Nº, Bairro)"
+                      value={customerAddress}
+                      onChange={(e) => setCustomerAddress(e.target.value)}
+                      className="w-full px-3.5 py-2.5 bg-white border border-slate-200 rounded-xl text-xs focus:ring-2 focus:ring-slate-900 focus:outline-none"
+                    />
+                  )}
 
-            {/* Total e Checkout */}
-            <div className="border-t border-slate-100 pt-3 space-y-3">
-              <div className="space-y-1 text-xs">
-                <div className="flex justify-between text-slate-500 font-medium">
-                  <span>Subtotal itens:</span>
-                  <span>R$ {itemsTotal.toFixed(2)}</span>
+                  <select
+                    value={paymentMethod}
+                    onChange={(e) => setPaymentMethod(e.target.value)}
+                    className="w-full px-3.5 py-2.5 bg-white border border-slate-200 rounded-xl text-xs focus:ring-2 focus:ring-slate-900 focus:outline-none"
+                  >
+                    <option value="PIX">Pagamento via PIX</option>
+                    <option value="Cartão de Crédito">Cartão de Crédito</option>
+                    <option value="Dinheiro">Dinheiro</option>
+                  </select>
                 </div>
-                {isDelivery && (
-                  <div className="flex justify-between text-slate-500 font-medium">
-                    <span>Tele-entrega:</span>
-                    <span>R$ {Number(store.delivery_fee).toFixed(2)}</span>
+
+                {/* Resumo */}
+                <div className="pt-2 border-t border-slate-200 text-xs space-y-1">
+                  <div className="flex justify-between text-slate-500">
+                    <span>Subtotal</span>
+                    <span>R$ {subtotal.toFixed(2)}</span>
                   </div>
-                )}
-                <div className="flex justify-between items-center text-sm font-black text-slate-900 pt-1 border-t border-slate-100">
-                  <span>Total Geral:</span>
-                  <span className="text-xl font-black">R$ {finalTotal.toFixed(2)}</span>
+                  {deliveryType === 'delivery' && (
+                    <div className="flex justify-between text-slate-500">
+                      <span>Entrega</span>
+                      <span>R$ {deliveryCost.toFixed(2)}</span>
+                    </div>
+                  )}
+                  <div className="flex justify-between text-sm font-bold text-slate-900 pt-1">
+                    <span>Total</span>
+                    <span>R$ {total.toFixed(2)}</span>
+                  </div>
                 </div>
-              </div>
 
-              <button
-                onClick={handleSendWhatsApp}
-                className="w-full py-4 bg-emerald-600 hover:bg-emerald-700 text-white font-black rounded-2xl flex items-center justify-center gap-2 shadow-lg shadow-emerald-600/20 transition text-sm"
-              >
-                <MessageCircle className="w-5 h-5" />
-                Enviar Pedido no WhatsApp
-              </button>
-            </div>
+                <button
+                  onClick={handleCheckoutWhatsApp}
+                  className="w-full py-3.5 rounded-2xl bg-emerald-600 hover:bg-emerald-700 text-white font-semibold text-sm flex items-center justify-center gap-2 shadow-sm active:scale-98 transition"
+                >
+                  <Send className="w-4 h-4" />
+                  Enviar Pedido no WhatsApp
+                </button>
+              </div>
+            )}
           </div>
         </div>
       )}
 
-      {/* Modal Admin (Revendedor) */}
-      {showAdmin && (
-        <div className="fixed inset-0 bg-slate-950/60 z-50 flex items-center justify-center p-4 backdrop-blur-xs">
-          <div className="bg-white w-full max-w-lg rounded-3xl p-6 max-h-[90vh] overflow-y-auto space-y-5">
-            <div className="flex items-center justify-between border-b border-slate-100 pb-3">
+      {/* PAINEL SIMPLIFICADO DO REVENDEDOR */}
+      {isPanelOpen && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
+          <div className="fixed inset-0 bg-slate-950/40 backdrop-blur-xs" onClick={() => setIsPanelOpen(false)} />
+          <div className="relative w-full max-w-2xl bg-white rounded-3xl shadow-2xl p-6 z-10 max-h-[85vh] flex flex-col">
+            <div className="flex items-center justify-between pb-4 border-b border-slate-100">
               <div>
-                <h2 className="font-black text-base text-slate-900">Painel do Revendedor</h2>
-                <p className="text-xs text-slate-400 font-medium">{store.name}</p>
+                <h3 className="font-semibold text-slate-900">Gestão de Vitrine da Loja</h3>
+                <p className="text-xs text-slate-400">Ative produtos e ajuste seus preços de revenda.</p>
               </div>
-              <button onClick={() => setShowAdmin(false)} className="p-1 hover:bg-slate-100 rounded-full">
+              <button onClick={() => setIsPanelOpen(false)} className="p-1 rounded-lg hover:bg-slate-100">
                 <X className="w-5 h-5 text-slate-400" />
               </button>
             </div>
 
-            <div className="space-y-3">
-              <p className="text-xs text-slate-500 font-medium">
-                Defina seus preços de venda e selecione quais peças ficam ativas na sua loja:
-              </p>
+            <div className="flex-1 overflow-y-auto py-4 space-y-2">
+              {allProducts.map((prod) => {
+                const storeProd = products.find((p) => p.product_id === prod.id);
+                const isActive = !!storeProd?.is_active;
 
-              <div className="divide-y divide-slate-100 max-h-72 overflow-y-auto pr-1">
-                {products.map(p => (
-                  <div key={p.id} className="py-3 flex items-center justify-between gap-3 text-xs">
-                    <div className="flex items-center gap-2.5 flex-1">
-                      <input
-                        type="checkbox"
-                        checked={editActiveList[p.id] ?? true}
-                        onChange={e => setEditActiveList(prev => ({ ...prev, [p.id]: e.target.checked }))}
-                        className="w-4 h-4 rounded text-slate-900 focus:ring-slate-900 cursor-pointer"
-                      />
-                      <div>
-                        <p className="font-extrabold text-slate-900 leading-tight">{p.name}</p>
-                        <p className="text-[10px] text-slate-400 font-medium">
-                          Custo Hub: R$ {Number(p.price).toFixed(2)} | Estoque: {p.stock_quantity}
-                        </p>
-                      </div>
+                return (
+                  <div key={prod.id} className="flex items-center justify-between p-3 rounded-2xl border border-slate-100 bg-slate-50">
+                    <div>
+                      <p className="text-xs sm:text-sm font-medium text-slate-800">{prod.name}</p>
+                      <p className="text-xs text-slate-400">Custo base: R$ {Number(prod.price).toFixed(2)} | Estoque: {prod.stock_quantity}</p>
                     </div>
 
-                    <div className="flex items-center gap-1 font-bold">
-                      <span className="text-slate-400">R$</span>
-                      <input
-                        type="number"
-                        step="0.50"
-                        min="0"
-                        value={editPriceList[p.id] ?? Number(p.price)}
-                        onChange={e => setEditPriceList(prev => ({ ...prev, [p.id]: parseFloat(e.target.value) || 0 }))}
-                        className="w-20 p-1.5 border border-slate-200 rounded-lg text-right font-black outline-none focus:border-slate-900 bg-slate-50"
-                      />
+                    <div className="flex items-center gap-3">
+                      <button
+                        onClick={() => toggleStoreProduct(prod, storeProd)}
+                        disabled={updatingId === prod.id}
+                        className={`px-3 py-1.5 rounded-xl text-xs font-semibold transition ${
+                          isActive
+                            ? 'bg-emerald-100 text-emerald-800 hover:bg-emerald-200'
+                            : 'bg-slate-200 text-slate-600 hover:bg-slate-300'
+                        }`}
+                      >
+                        {isActive ? 'Ativo na Loja' : 'Oculto'}
+                      </button>
                     </div>
                   </div>
-                ))}
-              </div>
-            </div>
-
-            <div className="border-t border-slate-100 pt-3">
-              <button
-                disabled={savingAdmin}
-                onClick={handleSaveAdmin}
-                className="w-full py-3.5 bg-slate-900 hover:bg-slate-800 text-white font-black rounded-xl flex items-center justify-center gap-2 transition text-xs"
-              >
-                <Check className="w-4 h-4" />
-                {savingAdmin ? 'Salvando...' : 'Salvar Preços da Minha Loja'}
-              </button>
+                );
+              })}
             </div>
           </div>
         </div>
