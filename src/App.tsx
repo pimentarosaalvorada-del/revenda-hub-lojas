@@ -1,10 +1,10 @@
 import { useEffect, useMemo, useState } from 'react';
 import { Search, Settings, ShieldCheck, ShoppingBag, Store as StoreIcon } from 'lucide-react';
-import { useStoreData } from './hooks/useStoreData';
-import { ProductCard } from './components/ProductCard';
-import { CartDrawer } from './components/CartDrawer';
-import { ResellerPanel } from './components/ResellerPanel';
-import { formatBRL } from './lib/format';
+import { useStoreData } from './useStoreData';
+import { ProductCard } from './ProductCard';
+import { CartDrawer } from './CartDrawer';
+import { ResellerPanel } from './ResellerPanel';
+import { formatBRL } from './format';
 import type { CartItem, CatalogItem } from './types';
 
 function getSlugFromUrl(): string {
