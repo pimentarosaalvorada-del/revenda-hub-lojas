@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { supabase } from './supabase';
-import { ShoppingBag, Search, Plus, Minus, Trash2, Bike, Store as StoreIcon, MessageCircle, Settings, X, Check, AlertCircle } from 'lucide-react';
+import { ShoppingBag, Search, Plus, Minus, Trash2, Bike, Store as StoreIcon, MessageCircle, Settings, X, Check, RefreshCw } from 'lucide-react';
 
 interface StoreData {
   id: string;
@@ -28,13 +28,24 @@ interface CartItem {
 }
 
 export default function App() {
-  const [store, setStore] = useState<StoreData | null>(null);
+  // Inicializa a loja de imediato para NUNCA travar a tela
+  const [store, setStore] = useState<StoreData>({
+    id: 'loja-modelo',
+    name: 'Loja Modelo Hub',
+    slug: 'loja-modelo',
+    whatsapp: '51981838571',
+    primary_color: '#000000',
+    accent_color: '#059669',
+    delivery_fee: 10.00,
+  });
+
   const [products, setProducts] = useState<ProductItem[]>([]);
   const [cart, setCart] = useState<CartItem[]>([]);
   const [search, setSearch] = useState('');
   const [showCart, setShowCart] = useState(false);
   const [showAdmin, setShowAdmin] = useState(false);
-  const [loadError, setLoadError] = useState<string | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [statusMsg, setStatusMsg] = useState<string | null>(null);
 
   // Pedido
   const [isDelivery, setIsDelivery] = useState(false);
@@ -43,59 +54,45 @@ export default function App() {
   const [address, setAddress] = useState('');
   const [notes, setNotes] = useState('');
 
-  // Painel de Configuração do Revendedor
+  // Painel Admin
   const [editPriceList, setEditPriceList] = useState<{ [productId: string]: number }>({});
   const [editActiveList, setEditActiveList] = useState<{ [productId: string]: boolean }>({});
   const [savingAdmin, setSavingAdmin] = useState(false);
 
-  // Detecta o slug na URL (?loja=slug ou padrão 'loja-modelo')
   const searchParams = new URLSearchParams(window.location.search);
   const storeSlug = searchParams.get('loja') || 'loja-modelo';
 
   useEffect(() => {
-    loadStore();
+    loadStoreData();
   }, [storeSlug]);
 
-  const loadStore = async () => {
-    try {
-      setLoadError(null);
+  const loadStoreData = async () => {
+    setLoading(true);
+    setStatusMsg(null);
 
+    try {
       // 1. Busca dados da loja
-      const { data: storeData, error: storeErr } = await supabase
+      const { data: storeData } = await supabase
         .from('stores')
         .select('*')
         .eq('slug', storeSlug)
         .maybeSingle();
 
-      if (storeErr) {
-        console.error('Erro ao buscar loja:', storeErr);
-        setLoadError(`Erro na consulta da loja: ${storeErr.message}`);
+      if (storeData) {
+        setStore(storeData);
       }
 
-      // Se não encontrar no banco, usa fallback padrão imediato
-      const activeStore: StoreData = storeData || {
-        id: '00000000-0000-0000-0000-000000000000',
-        name: 'Loja Modelo Hub',
-        slug: 'loja-modelo',
-        whatsapp: '51981838571',
-        primary_color: '#000000',
-        accent_color: '#059669',
-        delivery_fee: 10.00,
-      };
-
-      setStore(activeStore);
-
-      // 2. Busca catálogo de produtos do estoque central
+      // 2. Busca produtos
       const { data: baseProducts, error: prodErr } = await supabase
         .from('products')
         .select('*')
         .order('name');
 
       if (prodErr) {
-        console.error('Erro ao buscar produtos:', prodErr);
+        setStatusMsg('Aviso: Verifique a conexão com o banco.');
       }
 
-      // 3. Busca personalizações da loja
+      // 3. Busca preços da loja
       let customMap = new Map();
       if (storeData?.id) {
         const { data: customData } = await supabase
@@ -111,7 +108,7 @@ export default function App() {
       const initialPrices: { [key: string]: number } = {};
       const initialActives: { [key: string]: boolean } = {};
 
-      const finalProducts: ProductItem[] = (baseProducts || []).map(p => {
+      const list: ProductItem[] = (baseProducts || []).map(p => {
         const custom = customMap.get(p.id);
         const finalPrice = custom?.custom_price !== undefined ? Number(custom.custom_price) : Number(p.price);
         const active = custom?.is_active !== undefined ? custom.is_active : true;
@@ -126,22 +123,13 @@ export default function App() {
         };
       });
 
-      setProducts(finalProducts);
+      setProducts(list);
       setEditPriceList(initialPrices);
       setEditActiveList(initialActives);
-    } catch (err: any) {
-      console.error('Falha geral:', err);
-      setLoadError(`Falha inesperada: ${err.message || 'Erro de conexão'}`);
-      // Fallback de emergência para nunca travar tela
-      setStore({
-        id: '00000000-0000-0000-0000-000000000000',
-        name: 'Loja Modelo Hub',
-        slug: 'loja-modelo',
-        whatsapp: '51981838571',
-        primary_color: '#000000',
-        accent_color: '#059669',
-        delivery_fee: 10.00,
-      });
+    } catch (e: any) {
+      setStatusMsg('Modo offline / Carregando catálogo');
+    } finally {
+      setLoading(false);
     }
   };
 
@@ -184,11 +172,11 @@ export default function App() {
   };
 
   const itemsTotal = cart.reduce((acc, i) => acc + i.unitPrice * i.quantity, 0);
-  const deliveryTax = isDelivery ? Number(store?.delivery_fee || 0) : 0;
+  const deliveryTax = isDelivery ? Number(store.delivery_fee || 0) : 0;
   const finalTotal = itemsTotal + deliveryTax;
 
   const handleSendWhatsApp = () => {
-    if (cart.length === 0 || !store) return;
+    if (cart.length === 0) return;
 
     if (isDelivery && (!customerName.trim() || !address.trim())) {
       alert('Por favor, informe seu Nome e Endereço para a entrega!');
@@ -221,7 +209,6 @@ export default function App() {
   };
 
   const handleSaveAdmin = async () => {
-    if (!store) return;
     setSavingAdmin(true);
 
     try {
@@ -239,7 +226,7 @@ export default function App() {
 
       alert('Configurações da loja salvas com sucesso!');
       setShowAdmin(false);
-      loadStore();
+      loadStoreData();
     } catch (e: any) {
       alert('Erro ao salvar: ' + e.message);
     } finally {
@@ -252,24 +239,14 @@ export default function App() {
     p.name.toLowerCase().includes(search.toLowerCase())
   );
 
-  if (!store) {
-    return (
-      <div className="min-h-screen flex items-center justify-center text-gray-500 font-sans">
-        Carregando vitrine...
-      </div>
-    );
-  }
-
   return (
     <div className="min-h-screen bg-gray-50 text-gray-900 font-sans pb-28">
-      {/* Alerta caso ocorra erro no banco */}
-      {loadError && (
-        <div className="bg-amber-500 text-white text-xs px-4 py-2 flex items-center justify-between">
-          <div className="flex items-center gap-2">
-            <AlertCircle className="w-4 h-4" />
-            <span>{loadError}</span>
-          </div>
-          <button onClick={() => setLoadError(null)} className="font-bold underline text-[10px]">Fechar</button>
+      {statusMsg && (
+        <div className="bg-amber-100 text-amber-900 text-xs px-4 py-2 flex items-center justify-between border-b border-amber-200">
+          <span>{statusMsg}</span>
+          <button onClick={loadStoreData} className="font-bold flex items-center gap-1 underline">
+            <RefreshCw className="w-3 h-3" /> Atualizar
+          </button>
         </div>
       )}
 
@@ -324,9 +301,13 @@ export default function App() {
 
       {/* Catálogo de Produtos */}
       <main className="max-w-2xl mx-auto px-4 mt-5">
-        {filtered.length === 0 ? (
+        {loading ? (
           <div className="text-center py-12 text-gray-400 text-sm">
-            Nenhum produto disponível no momento.
+            Sincronizando estoque...
+          </div>
+        ) : filtered.length === 0 ? (
+          <div className="text-center py-12 text-gray-400 text-sm">
+            Nenhum produto cadastrado no momento.
           </div>
         ) : (
           <div className="grid grid-cols-2 gap-3.5">
@@ -380,7 +361,7 @@ export default function App() {
         )}
       </main>
 
-      {/* Barra de Carrinho Flutuante */}
+      {/* Carrinho Flutuante */}
       {cart.length > 0 && !showCart && (
         <div className="fixed bottom-4 left-4 right-4 z-20 max-w-2xl mx-auto">
           <button
@@ -517,7 +498,7 @@ export default function App() {
         </div>
       )}
 
-      {/* Modal do Painel do Revendedor */}
+      {/* Modal Admin */}
       {showAdmin && (
         <div className="fixed inset-0 bg-black/60 z-50 flex items-center justify-center p-4 backdrop-blur-sm">
           <div className="bg-white w-full max-w-lg rounded-3xl p-6 max-h-[90vh] overflow-y-auto space-y-5">
