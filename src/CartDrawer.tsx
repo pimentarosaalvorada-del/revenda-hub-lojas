@@ -1,8 +1,8 @@
 import { useState } from 'react';
 import { Minus, Plus, Send, ShoppingBag, Trash2, X } from 'lucide-react';
-import type { CartItem, CustomerData, DeliveryType, PaymentMethod, Store } from '../types';
-import { formatBRL } from '../lib/format';
-import { buildWhatsAppOrderUrl, getOrderTotals } from '../lib/whatsapp';
+import type { CartItem, CustomerData, DeliveryType, PaymentMethod, Store } from './types';
+import { formatBRL } from './format';
+import { buildWhatsAppOrderUrl, getOrderTotals } from './whatsapp';
 
 interface Props {
   open: boolean;
@@ -53,7 +53,6 @@ export function CartDrawer({ open, onClose, store, items, accent, onChangeQty, o
         role="dialog"
         aria-label="Carrinho"
       >
-        {/* Handle mobile */}
         <div className="flex justify-center pt-2 sm:hidden">
           <span className="h-1.5 w-10 rounded-full bg-slate-200" />
         </div>
@@ -75,7 +74,6 @@ export function CartDrawer({ open, onClose, store, items, accent, onChangeQty, o
           </button>
         </header>
 
-        {/* Itens */}
         <div className="flex-1 space-y-3 overflow-y-auto px-6 py-4">
           {items.length === 0 ? (
             <div className="flex h-full flex-col items-center justify-center py-12 text-center">
@@ -127,7 +125,6 @@ export function CartDrawer({ open, onClose, store, items, accent, onChangeQty, o
           )}
         </div>
 
-        {/* Checkout */}
         {items.length > 0 && (
           <footer className="space-y-4 border-t border-slate-100 bg-slate-50/60 px-6 py-5">
             <div className="grid grid-cols-2 gap-1 rounded-2xl bg-slate-200/60 p-1">
@@ -207,7 +204,8 @@ export function CartDrawer({ open, onClose, store, items, accent, onChangeQty, o
 
             <button
               onClick={handleSubmit}
-              className="flex w-full items-center justify-center gap-2 rounded-2xl bg-emerald-600 py-3.5 text-sm font-semibold text-white shadow-sm transition hover:bg-emerald-700 active:scale-[0.98]"
+              style={{ backgroundColor: accent }}
+              className="flex w-full items-center justify-center gap-2 rounded-2xl py-3.5 text-sm font-semibold text-white shadow-sm transition hover:opacity-95 active:scale-[0.98]"
             >
               <Send className="h-4 w-4" />
               Enviar pedido no WhatsApp
