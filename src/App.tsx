@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { supabase } from './supabase';
-import { ShoppingBag, Search, Plus, Minus, Trash2, Bike, Store as StoreIcon, MessageCircle, Settings, X, Check } from 'lucide-react';
+import { ShoppingBag, Search, Plus, Minus, Trash2, Bike, Store as StoreIcon, MessageCircle, Settings, X, Check, AlertCircle } from 'lucide-react';
 
 interface StoreData {
   id: string;
@@ -34,6 +34,7 @@ export default function App() {
   const [search, setSearch] = useState('');
   const [showCart, setShowCart] = useState(false);
   const [showAdmin, setShowAdmin] = useState(false);
+  const [loadError, setLoadError] = useState<string | null>(null);
 
   // Pedido
   const [isDelivery, setIsDelivery] = useState(false);
@@ -47,7 +48,7 @@ export default function App() {
   const [editActiveList, setEditActiveList] = useState<{ [productId: string]: boolean }>({});
   const [savingAdmin, setSavingAdmin] = useState(false);
 
-  // Lê o slug pela URL (ex: ?loja=pimentarosa ou padrão 'loja-modelo')
+  // Detecta o slug na URL (?loja=slug ou padrão 'loja-modelo')
   const searchParams = new URLSearchParams(window.location.search);
   const storeSlug = searchParams.get('loja') || 'loja-modelo';
 
@@ -56,36 +57,64 @@ export default function App() {
   }, [storeSlug]);
 
   const loadStore = async () => {
-    const { data: storeData } = await supabase
-      .from('stores')
-      .select('*')
-      .eq('slug', storeSlug)
-      .single();
+    try {
+      setLoadError(null);
 
-    if (storeData) {
-      setStore(storeData);
+      // 1. Busca dados da loja
+      const { data: storeData, error: storeErr } = await supabase
+        .from('stores')
+        .select('*')
+        .eq('slug', storeSlug)
+        .maybeSingle();
 
-      // Puxa os produtos do estoque central
-      const { data: baseProducts } = await supabase
+      if (storeErr) {
+        console.error('Erro ao buscar loja:', storeErr);
+        setLoadError(`Erro na consulta da loja: ${storeErr.message}`);
+      }
+
+      // Se não encontrar no banco, usa fallback padrão imediato
+      const activeStore: StoreData = storeData || {
+        id: '00000000-0000-0000-0000-000000000000',
+        name: 'Loja Modelo Hub',
+        slug: 'loja-modelo',
+        whatsapp: '51981838571',
+        primary_color: '#000000',
+        accent_color: '#059669',
+        delivery_fee: 10.00,
+      };
+
+      setStore(activeStore);
+
+      // 2. Busca catálogo de produtos do estoque central
+      const { data: baseProducts, error: prodErr } = await supabase
         .from('products')
         .select('*')
         .order('name');
 
-      // Puxa as regras desta loja
-      const { data: customData } = await supabase
-        .from('store_products')
-        .select('*')
-        .eq('store_id', storeData.id);
+      if (prodErr) {
+        console.error('Erro ao buscar produtos:', prodErr);
+      }
 
-      const customMap = new Map((customData || []).map(cp => [cp.product_id, cp]));
+      // 3. Busca personalizações da loja
+      let customMap = new Map();
+      if (storeData?.id) {
+        const { data: customData } = await supabase
+          .from('store_products')
+          .select('*')
+          .eq('store_id', storeData.id);
+
+        if (customData) {
+          customMap = new Map(customData.map(cp => [cp.product_id, cp]));
+        }
+      }
 
       const initialPrices: { [key: string]: number } = {};
       const initialActives: { [key: string]: boolean } = {};
 
       const finalProducts: ProductItem[] = (baseProducts || []).map(p => {
         const custom = customMap.get(p.id);
-        const finalPrice = custom ? Number(custom.custom_price) : Number(p.price);
-        const active = custom ? custom.is_active : true;
+        const finalPrice = custom?.custom_price !== undefined ? Number(custom.custom_price) : Number(p.price);
+        const active = custom?.is_active !== undefined ? custom.is_active : true;
 
         initialPrices[p.id] = finalPrice;
         initialActives[p.id] = active;
@@ -100,6 +129,19 @@ export default function App() {
       setProducts(finalProducts);
       setEditPriceList(initialPrices);
       setEditActiveList(initialActives);
+    } catch (err: any) {
+      console.error('Falha geral:', err);
+      setLoadError(`Falha inesperada: ${err.message || 'Erro de conexão'}`);
+      // Fallback de emergência para nunca travar tela
+      setStore({
+        id: '00000000-0000-0000-0000-000000000000',
+        name: 'Loja Modelo Hub',
+        slug: 'loja-modelo',
+        whatsapp: '51981838571',
+        primary_color: '#000000',
+        accent_color: '#059669',
+        delivery_fee: 10.00,
+      });
     }
   };
 
@@ -182,22 +224,27 @@ export default function App() {
     if (!store) return;
     setSavingAdmin(true);
 
-    for (const p of products) {
-      const price = editPriceList[p.id] ?? Number(p.price);
-      const active = editActiveList[p.id] ?? true;
+    try {
+      for (const p of products) {
+        const price = editPriceList[p.id] ?? Number(p.price);
+        const active = editActiveList[p.id] ?? true;
 
-      await supabase.from('store_products').upsert({
-        store_id: store.id,
-        product_id: p.id,
-        custom_price: price,
-        is_active: active,
-      }, { onConflict: 'store_id,product_id' });
+        await supabase.from('store_products').upsert({
+          store_id: store.id,
+          product_id: p.id,
+          custom_price: price,
+          is_active: active,
+        }, { onConflict: 'store_id,product_id' });
+      }
+
+      alert('Configurações da loja salvas com sucesso!');
+      setShowAdmin(false);
+      loadStore();
+    } catch (e: any) {
+      alert('Erro ao salvar: ' + e.message);
+    } finally {
+      setSavingAdmin(false);
     }
-
-    setSavingAdmin(false);
-    setShowAdmin(false);
-    loadStore();
-    alert('Configurações da loja salvas com sucesso!');
   };
 
   const activeProducts = products.filter(p => p.is_active !== false);
@@ -215,6 +262,17 @@ export default function App() {
 
   return (
     <div className="min-h-screen bg-gray-50 text-gray-900 font-sans pb-28">
+      {/* Alerta caso ocorra erro no banco */}
+      {loadError && (
+        <div className="bg-amber-500 text-white text-xs px-4 py-2 flex items-center justify-between">
+          <div className="flex items-center gap-2">
+            <AlertCircle className="w-4 h-4" />
+            <span>{loadError}</span>
+          </div>
+          <button onClick={() => setLoadError(null)} className="font-bold underline text-[10px]">Fechar</button>
+        </div>
+      )}
+
       {/* Topo da Loja */}
       <header
         style={{ backgroundColor: store.primary_color || '#000000' }}
@@ -250,7 +308,7 @@ export default function App() {
         </div>
       </header>
 
-      {/* Campo de Busca */}
+      {/* Busca */}
       <div className="max-w-2xl mx-auto px-4 mt-4">
         <div className="relative">
           <Search className="absolute left-3.5 top-3.5 w-5 h-5 text-gray-400" />
@@ -264,59 +322,65 @@ export default function App() {
         </div>
       </div>
 
-      {/* Grade de Produtos */}
+      {/* Catálogo de Produtos */}
       <main className="max-w-2xl mx-auto px-4 mt-5">
-        <div className="grid grid-cols-2 gap-3.5">
-          {filtered.map(p => {
-            const price = getPrice(p);
-            const inStock = p.stock_quantity > 0;
+        {filtered.length === 0 ? (
+          <div className="text-center py-12 text-gray-400 text-sm">
+            Nenhum produto disponível no momento.
+          </div>
+        ) : (
+          <div className="grid grid-cols-2 gap-3.5">
+            {filtered.map(p => {
+              const price = getPrice(p);
+              const inStock = p.stock_quantity > 0;
 
-            return (
-              <div
-                key={p.id}
-                className="bg-white border border-gray-200 rounded-2xl p-4 flex flex-col justify-between shadow-sm hover:shadow-md transition"
-              >
-                <div>
-                  <div className="flex items-center justify-between mb-2">
-                    <span
-                      className={`text-[10px] font-bold px-2 py-0.5 rounded-full ${
-                        inStock ? 'bg-emerald-50 text-emerald-700' : 'bg-red-50 text-red-600'
-                      }`}
-                    >
-                      {inStock ? 'Disponível' : 'Esgotado'}
-                    </span>
-                  </div>
-                  <h3 className="font-bold text-sm text-gray-900 line-clamp-2 leading-snug">
-                    {p.name}
-                  </h3>
-                </div>
-
-                <div className="mt-4 pt-2 border-t flex items-end justify-between">
+              return (
+                <div
+                  key={p.id}
+                  className="bg-white border border-gray-200 rounded-2xl p-4 flex flex-col justify-between shadow-sm hover:shadow-md transition"
+                >
                   <div>
-                    <span className="text-[10px] text-gray-400 block font-medium">Preço</span>
-                    <span className="text-base font-black text-gray-900">
-                      R$ {price.toFixed(2)}
-                    </span>
+                    <div className="flex items-center justify-between mb-2">
+                      <span
+                        className={`text-[10px] font-bold px-2 py-0.5 rounded-full ${
+                          inStock ? 'bg-emerald-50 text-emerald-700' : 'bg-red-50 text-red-600'
+                        }`}
+                      >
+                        {inStock ? 'Disponível' : 'Esgotado'}
+                      </span>
+                    </div>
+                    <h3 className="font-bold text-sm text-gray-900 line-clamp-2 leading-snug">
+                      {p.name}
+                    </h3>
                   </div>
 
-                  <button
-                    disabled={!inStock}
-                    onClick={() => addToCart(p)}
-                    style={{
-                      backgroundColor: inStock ? store.accent_color || '#059669' : '#e5e7eb',
-                    }}
-                    className="p-2 text-white rounded-xl shadow-sm hover:opacity-90 disabled:cursor-not-allowed transition"
-                  >
-                    <Plus className="w-4 h-4" />
-                  </button>
+                  <div className="mt-4 pt-2 border-t flex items-end justify-between">
+                    <div>
+                      <span className="text-[10px] text-gray-400 block font-medium">Preço</span>
+                      <span className="text-base font-black text-gray-900">
+                        R$ {price.toFixed(2)}
+                      </span>
+                    </div>
+
+                    <button
+                      disabled={!inStock}
+                      onClick={() => addToCart(p)}
+                      style={{
+                        backgroundColor: inStock ? store.accent_color || '#059669' : '#e5e7eb',
+                      }}
+                      className="p-2 text-white rounded-xl shadow-sm hover:opacity-90 disabled:cursor-not-allowed transition"
+                    >
+                      <Plus className="w-4 h-4" />
+                    </button>
+                  </div>
                 </div>
-              </div>
-            );
-          })}
-        </div>
+              );
+            })}
+          </div>
+        )}
       </main>
 
-      {/* Botão Flutuante de Carrinho */}
+      {/* Barra de Carrinho Flutuante */}
       {cart.length > 0 && !showCart && (
         <div className="fixed bottom-4 left-4 right-4 z-20 max-w-2xl mx-auto">
           <button
@@ -453,7 +517,7 @@ export default function App() {
         </div>
       )}
 
-      {/* Modal de Administração do Revendedor (Painel de Preços) */}
+      {/* Modal do Painel do Revendedor */}
       {showAdmin && (
         <div className="fixed inset-0 bg-black/60 z-50 flex items-center justify-center p-4 backdrop-blur-sm">
           <div className="bg-white w-full max-w-lg rounded-3xl p-6 max-h-[90vh] overflow-y-auto space-y-5">
@@ -484,7 +548,7 @@ export default function App() {
                       />
                       <div>
                         <p className="font-bold text-gray-900 leading-tight">{p.name}</p>
-                        <p className="text-[10px] text-gray-400">Custo Base: R$ {Number(p.price).toFixed(2)} | Estoque: {p.stock_quantity}</p>
+                        <p className="text-[10px] text-gray-400">Preço Base: R$ {Number(p.price).toFixed(2)} | Estoque: {p.stock_quantity}</p>
                       </div>
                     </div>
 
