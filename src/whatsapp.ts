@@ -1,4 +1,4 @@
-import type { CartItem, CustomerData, DeliveryType, Store } from '../types';
+import type { CartItem, CustomerData, DeliveryType, Store } from './types';
 import { formatBRL } from './format';
 
 export function getOrderTotals(items: CartItem[], store: Store, delivery: DeliveryType) {
