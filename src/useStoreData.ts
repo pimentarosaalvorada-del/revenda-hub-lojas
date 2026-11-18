@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState } from 'react';
-import { supabase } from '../lib/supabase';
-import type { Product, Store, StoreProduct } from '../types';
+import { supabase } from './supabase';
+import type { Product, Store, StoreProduct } from './types';
 
 type Status = 'loading' | 'ready' | 'not-found' | 'error';
 
