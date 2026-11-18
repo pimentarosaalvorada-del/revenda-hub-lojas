@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { supabase } from './supabase';
-import { ShoppingBag, Search, Plus, Minus, Trash2, Bike, Store as StoreIcon, MessageCircle, Settings, X, Check, RefreshCw } from 'lucide-react';
+import { ShoppingBag, Search, Plus, Minus, Trash2, Bike, Store as StoreIcon, MessageCircle, Settings, X, Check, RefreshCw, AlertTriangle } from 'lucide-react';
 
 interface StoreData {
   id: string;
@@ -28,7 +28,6 @@ interface CartItem {
 }
 
 export default function App() {
-  // Inicializa a loja de imediato para NUNCA travar a tela
   const [store, setStore] = useState<StoreData>({
     id: 'loja-modelo',
     name: 'Loja Modelo Hub',
@@ -45,7 +44,7 @@ export default function App() {
   const [showCart, setShowCart] = useState(false);
   const [showAdmin, setShowAdmin] = useState(false);
   const [loading, setLoading] = useState(true);
-  const [statusMsg, setStatusMsg] = useState<string | null>(null);
+  const [dbError, setDbError] = useState<{ message: string; details?: string; hint?: string; code?: string } | null>(null);
 
   // Pedido
   const [isDelivery, setIsDelivery] = useState(false);
@@ -54,7 +53,7 @@ export default function App() {
   const [address, setAddress] = useState('');
   const [notes, setNotes] = useState('');
 
-  // Painel Admin
+  // Admin
   const [editPriceList, setEditPriceList] = useState<{ [productId: string]: number }>({});
   const [editActiveList, setEditActiveList] = useState<{ [productId: string]: boolean }>({});
   const [savingAdmin, setSavingAdmin] = useState(false);
@@ -68,10 +67,10 @@ export default function App() {
 
   const loadStoreData = async () => {
     setLoading(true);
-    setStatusMsg(null);
+    setDbError(null);
 
     try {
-      // 1. Busca dados da loja
+      // 1. Consulta dados da loja
       const { data: storeData } = await supabase
         .from('stores')
         .select('*')
@@ -82,17 +81,25 @@ export default function App() {
         setStore(storeData);
       }
 
-      // 2. Busca produtos
+      // 2. Consulta produtos (captura o erro exato do Supabase)
       const { data: baseProducts, error: prodErr } = await supabase
         .from('products')
         .select('*')
         .order('name');
 
       if (prodErr) {
-        setStatusMsg('Aviso: Verifique a conexão com o banco.');
+        console.error('ERRO SUPABASE:', prodErr);
+        setDbError({
+          message: prodErr.message,
+          details: prodErr.details,
+          hint: prodErr.hint,
+          code: prodErr.code,
+        });
+        setLoading(false);
+        return;
       }
 
-      // 3. Busca preços da loja
+      // 3. Consulta preços customizados
       let customMap = new Map();
       if (storeData?.id) {
         const { data: customData } = await supabase
@@ -127,7 +134,7 @@ export default function App() {
       setEditPriceList(initialPrices);
       setEditActiveList(initialActives);
     } catch (e: any) {
-      setStatusMsg('Modo offline / Carregando catálogo');
+      setDbError({ message: e.message || 'Erro inesperado de rede' });
     } finally {
       setLoading(false);
     }
@@ -224,7 +231,7 @@ export default function App() {
         }, { onConflict: 'store_id,product_id' });
       }
 
-      alert('Configurações da loja salvas com sucesso!');
+      alert('Configurações salvas!');
       setShowAdmin(false);
       loadStoreData();
     } catch (e: any) {
@@ -241,12 +248,23 @@ export default function App() {
 
   return (
     <div className="min-h-screen bg-gray-50 text-gray-900 font-sans pb-28">
-      {statusMsg && (
-        <div className="bg-amber-100 text-amber-900 text-xs px-4 py-2 flex items-center justify-between border-b border-amber-200">
-          <span>{statusMsg}</span>
-          <button onClick={loadStoreData} className="font-bold flex items-center gap-1 underline">
-            <RefreshCw className="w-3 h-3" /> Atualizar
-          </button>
+      {/* Box do Erro Real do Banco */}
+      {dbError && (
+        <div className="bg-red-600 text-white p-4 text-xs shadow-md">
+          <div className="max-w-2xl mx-auto flex items-start gap-2">
+            <AlertTriangle className="w-5 h-5 flex-shrink-0 mt-0.5" />
+            <div className="flex-1 space-y-1">
+              <p className="font-bold text-sm">Erro retornado pelo Supabase:</p>
+              <p className="font-mono bg-red-700 p-2 rounded">
+                {dbError.message} {dbError.code ? `(Código: ${dbError.code})` : ''}
+              </p>
+              {dbError.details && <p className="opacity-90">Detalhes: {dbError.details}</p>}
+              {dbError.hint && <p className="opacity-90">Dica: {dbError.hint}</p>}
+            </div>
+            <button onClick={loadStoreData} className="p-1 hover:bg-red-700 rounded">
+              <RefreshCw className="w-4 h-4" />
+            </button>
+          </div>
         </div>
       )}
 
@@ -299,7 +317,7 @@ export default function App() {
         </div>
       </div>
 
-      {/* Catálogo de Produtos */}
+      {/* Catálogo */}
       <main className="max-w-2xl mx-auto px-4 mt-5">
         {loading ? (
           <div className="text-center py-12 text-gray-400 text-sm">
@@ -307,7 +325,7 @@ export default function App() {
           </div>
         ) : filtered.length === 0 ? (
           <div className="text-center py-12 text-gray-400 text-sm">
-            Nenhum produto cadastrado no momento.
+            Nenhum produto cadastrado ou retornado.
           </div>
         ) : (
           <div className="grid grid-cols-2 gap-3.5">
@@ -380,7 +398,7 @@ export default function App() {
         </div>
       )}
 
-      {/* Modal do Carrinho */}
+      {/* Modal Carrinho */}
       {showCart && (
         <div className="fixed inset-0 bg-black/60 z-50 flex items-end sm:items-center justify-center p-0 sm:p-4 backdrop-blur-sm">
           <div className="bg-white w-full max-w-lg rounded-t-3xl sm:rounded-3xl p-5 max-h-[90vh] overflow-y-auto space-y-4">
