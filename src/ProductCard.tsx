@@ -1,6 +1,7 @@
+import type { ReactNode } from 'react';
 import { Minus, Plus } from 'lucide-react';
-import type { CatalogItem } from '../types';
-import { formatBRL } from '../lib/format';
+import type { CatalogItem } from './types';
+import { formatBRL } from './format';
 
 interface Props {
   item: CatalogItem;
@@ -86,7 +87,7 @@ export function ProductCard({ item, quantityInCart, accent, onAdd, onRemove }: P
   );
 }
 
-function Tag({ children, className }: { children: React.ReactNode; className: string }) {
+function Tag({ children, className }: { children: ReactNode; className: string }) {
   return (
     <span className={`rounded-full px-2 py-0.5 text-[10px] font-semibold shadow-sm ${className}`}>
       {children}
